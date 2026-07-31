@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="CmsEventService/CmsEventService.csproj" />
+  <Project Path="CmsEventService.Tests/CmsEventService.Tests.csproj" />
+</Solution>
