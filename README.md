@@ -1,6 +1,6 @@
 # CMS Event Service
 
-.NET 9 take-home project that ingests CMS webhook batches, stores latest entity versions in a relational database, and exposes authenticated read endpoints.
+A .NET 9 project that ingests CMS webhook batches, stores latest entity versions in a relational database, and exposes authenticated read endpoints.
 
 - `CmsEventService`: ASP.NET Core Web API
 - `CmsEventService.Tests`: xUnit integration and processing tests
