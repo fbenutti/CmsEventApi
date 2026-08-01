@@ -13,12 +13,14 @@ public sealed class CmsEventProcessorTests
     [Fact]
     public async Task UnpublishStoresLatestPayloadAndMarksEntityAsNotCmsPublished()
     {
+        // Arrange
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         await using var dbContext = CreateDbContext(connection);
         await dbContext.Database.EnsureCreatedAsync();
         var processor = new CmsEventProcessor(dbContext, NullLogger<CmsEventProcessor>.Instance);
 
+        // Act
         var result = await processor.ProcessAsync(
         [
             Event("publish", "article-1", 1, """{ "title": "Published" }"""),
@@ -27,6 +29,7 @@ public sealed class CmsEventProcessorTests
 
         var entity = await dbContext.Entities.SingleAsync();
 
+        // Assert
         Assert.Equal(2, result.Accepted);
         Assert.Equal(0, result.Failed);
         Assert.Equal(2, entity.LatestVersion);
@@ -37,39 +40,71 @@ public sealed class CmsEventProcessorTests
     [Fact]
     public async Task DeleteHardDeletesExistingEntity()
     {
+        // Arrange
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         await using var dbContext = CreateDbContext(connection);
         await dbContext.Database.EnsureCreatedAsync();
         var processor = new CmsEventProcessor(dbContext, NullLogger<CmsEventProcessor>.Instance);
 
+        // Act
         await processor.ProcessAsync(
         [
             Event("publish", "article-1", 1, """{ "title": "Published" }"""),
             new CmsEventDto { Type = "delete", Id = "article-1", Timestamp = DateTimeOffset.Parse("2024-01-02T00:00:00Z") }
         ], CancellationToken.None);
 
+        // Assert
         Assert.Empty(await dbContext.Entities.ToListAsync());
     }
 
     [Fact]
     public async Task InvalidEventsAreLoggedAndDoNotCreateEntities()
     {
+        // Arrange
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
         await using var dbContext = CreateDbContext(connection);
         await dbContext.Database.EnsureCreatedAsync();
         var processor = new CmsEventProcessor(dbContext, NullLogger<CmsEventProcessor>.Instance);
 
+        // Act
         var result = await processor.ProcessAsync(
         [
             new CmsEventDto { Type = "publish", Id = "broken", Timestamp = DateTimeOffset.Parse("2024-01-01T00:00:00Z") }
         ], CancellationToken.None);
 
+        // Assert
         Assert.Equal(0, result.Accepted);
         Assert.Equal(1, result.Failed);
         Assert.Empty(await dbContext.Entities.ToListAsync());
         Assert.Single(await dbContext.EventLogs.Where(log => log.Status == "Failed").ToListAsync());
+    }
+
+    [Fact]
+    public async Task DuplicateEventsAreLoggedAndIgnored()
+    {
+        // Arrange
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var dbContext = CreateDbContext(connection);
+        await dbContext.Database.EnsureCreatedAsync();
+        var processor = new CmsEventProcessor(dbContext, NullLogger<CmsEventProcessor>.Instance);
+        var incomingEvent = Event("publish", "article-1", 1, """{ "title": "Published" }""");
+
+        // Act
+        var result = await processor.ProcessAsync(
+        [
+            incomingEvent,
+            incomingEvent
+        ], CancellationToken.None);
+
+        // Assert
+        Assert.Equal(1, result.Accepted);
+        Assert.Equal(1, result.Ignored);
+        Assert.Equal(0, result.Failed);
+        Assert.Single(await dbContext.Entities.ToListAsync());
+        Assert.Single(await dbContext.EventLogs.Where(log => log.Status == "IgnoredDuplicate").ToListAsync());
     }
 
     private static CmsDbContext CreateDbContext(SqliteConnection connection)

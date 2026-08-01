@@ -1,4 +1,3 @@
-using System.Security.Claims;
 using CmsEventService.Authentication;
 using CmsEventService.Events;
 using CmsEventService.Services;
@@ -16,10 +15,12 @@ public sealed class EntitiesController(
     : ControllerBase
 {
     [HttpGet]
-    public async Task<ActionResult<IReadOnlyCollection<EntityResponse>>> List(CancellationToken cancellationToken)
+    public async Task<ActionResult<PagedResponse<EntityResponse>>> List(
+        [FromQuery] EntityQueryParameters parameters,
+        CancellationToken cancellationToken)
     {
         var includeDisabled = User.IsInRole("Admin");
-        var entities = await queryService.ListAsync(includeDisabled, cancellationToken);
+        var entities = await queryService.ListAsync(includeDisabled, parameters, cancellationToken);
         return Ok(entities);
     }
 

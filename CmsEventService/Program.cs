@@ -3,6 +3,7 @@ using CmsEventService.Data;
 using CmsEventService.Options;
 using CmsEventService.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -40,6 +41,21 @@ builder.Services.AddAuthorization();
 builder.Services.AddScoped<ICmsEventProcessor, CmsEventProcessor>();
 builder.Services.AddScoped<IEntityAdministrationService, EntityAdministrationService>();
 builder.Services.AddScoped<IEntityQueryService, EntityQueryService>();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.AddSecurityDefinition("Basic", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http,
+        Scheme = "basic",
+        Description = "Basic Authentication using the credentials from appsettings.json."
+    });
+
+    options.AddSecurityRequirement(document => new OpenApiSecurityRequirement
+    {
+        [new OpenApiSecuritySchemeReference("Basic", document, null)] = []
+    });
+});
 builder.Services.AddControllers();
 
 var app = builder.Build();
@@ -52,6 +68,20 @@ await using (var scope = app.Services.CreateAsyncScope())
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseSwagger();
+app.UseSwaggerUI();
+
+app.MapGet("/health", async (CmsDbContext dbContext, CancellationToken cancellationToken) =>
+{
+    var canConnect = await dbContext.Database.CanConnectAsync(cancellationToken);
+    return canConnect
+        ? Results.Ok(new { status = "Healthy" })
+        : Results.Problem("Database is not reachable.", statusCode: StatusCodes.Status503ServiceUnavailable);
+})
+.AllowAnonymous()
+.WithName("HealthCheck")
+.WithTags("Health");
 
 app.MapControllers();
 

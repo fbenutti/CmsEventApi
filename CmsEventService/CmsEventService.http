@@ -1,6 +1,30 @@
-@CmsEventService_HostAddress = http://localhost:5280
+@CmsEventService_HostAddress = http://localhost:5058
+@CmsAuth = Basic REPLACE_WITH_CMS_BASIC_TOKEN
+@ApiAuth = Basic REPLACE_WITH_API_BASIC_TOKEN
 
-GET {{CmsEventService_HostAddress}}/weatherforecast/
+GET {{CmsEventService_HostAddress}}/health
+Accept: application/json
+
+###
+
+POST {{CmsEventService_HostAddress}}/cms/events
+Authorization: {{CmsAuth}}
+Content-Type: application/json
+
+[
+  {
+    "type": "publish",
+    "id": "article-1",
+    "payload": { "title": "Hello" },
+    "version": 1,
+    "timestamp": "2024-01-01T00:00:00Z"
+  }
+]
+
+###
+
+GET {{CmsEventService_HostAddress}}/entities?page=1&pageSize=50
+Authorization: {{ApiAuth}}
 Accept: application/json
 
 ###

@@ -26,6 +26,7 @@ public sealed class EntityApiTests : IDisposable
     [Fact]
     public async Task NormalUsersOnlySeePublishedAndEnabledEntitiesWhileAdminsSeeDisabledEntities()
     {
+        // Arrange
         await IngestAsync("""
             [
               { "type": "publish", "id": "published", "payload": { "title": "Visible" }, "version": 1, "timestamp": "2024-01-01T00:00:00Z" },
@@ -33,9 +34,11 @@ public sealed class EntityApiTests : IDisposable
             ]
             """);
 
+        // Act
         var readerEntities = await GetEntitiesAsync("entityReader1", "8e221201-a1cd-4f57-89c7-04d517651625");
         var adminEntities = await GetEntitiesAsync("entityAdmin01", "4f21956d-918a-4199-9787-e4bf9956363c");
 
+        // Assert
         Assert.Single(readerEntities);
         Assert.Equal("published", readerEntities[0].GetProperty("id").GetString());
         Assert.Equal(2, adminEntities.Count);
@@ -48,6 +51,7 @@ public sealed class EntityApiTests : IDisposable
     [Fact]
     public async Task AdminCanLocallyDisableEntityWithoutDeletingCmsData()
     {
+        // Arrange
         await IngestAsync("""
             [
               { "type": "publish", "id": "local-disable", "payload": { "title": "Toggle me" }, "version": 1, "timestamp": "2024-01-01T00:00:00Z" }
@@ -60,15 +64,45 @@ public sealed class EntityApiTests : IDisposable
         };
         disableRequest.Headers.Authorization = Basic("entityAdmin01", "4f21956d-918a-4199-9787-e4bf9956363c");
 
+        // Act
         var disableResponse = await _client.SendAsync(disableRequest);
         var readerEntities = await GetEntitiesAsync("entityReader1", "8e221201-a1cd-4f57-89c7-04d517651625");
         var adminEntities = await GetEntitiesAsync("entityAdmin01", "4f21956d-918a-4199-9787-e4bf9956363c");
 
+        // Assert
         Assert.Equal(HttpStatusCode.NoContent, disableResponse.StatusCode);
         Assert.DoesNotContain(readerEntities, entity => entity.GetProperty("id").GetString() == "local-disable");
         Assert.Contains(adminEntities, entity =>
             entity.GetProperty("id").GetString() == "local-disable" &&
             entity.GetProperty("isLocallyDisabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ListEntitiesSupportsPaginationMetadata()
+    {
+        // Arrange
+        await IngestAsync("""
+            [
+              { "type": "publish", "id": "article-1", "payload": { "title": "One" }, "version": 1, "timestamp": "2024-01-01T00:00:00Z" },
+              { "type": "publish", "id": "article-2", "payload": { "title": "Two" }, "version": 1, "timestamp": "2024-01-01T00:00:00Z" },
+              { "type": "publish", "id": "article-3", "payload": { "title": "Three" }, "version": 1, "timestamp": "2024-01-01T00:00:00Z" }
+            ]
+            """);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/entities?page=2&pageSize=2");
+        request.Headers.Authorization = Basic("entityReader1", "8e221201-a1cd-4f57-89c7-04d517651625");
+
+        // Act
+        var response = await _client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        // Assert
+        Assert.Equal(2, document.RootElement.GetProperty("page").GetInt32());
+        Assert.Equal(2, document.RootElement.GetProperty("pageSize").GetInt32());
+        Assert.Equal(3, document.RootElement.GetProperty("totalItems").GetInt32());
+        Assert.Equal(2, document.RootElement.GetProperty("totalPages").GetInt32());
+        Assert.Single(document.RootElement.GetProperty("items").EnumerateArray());
     }
 
     private async Task IngestAsync(string json)
@@ -93,7 +127,11 @@ public sealed class EntityApiTests : IDisposable
         response.EnsureSuccessStatusCode();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
-        return document.RootElement.EnumerateArray().Select(entity => entity.Clone()).ToList();
+        return document.RootElement
+            .GetProperty("items")
+            .EnumerateArray()
+            .Select(entity => entity.Clone())
+            .ToList();
     }
 
     private static AuthenticationHeaderValue Basic(string username, string password)

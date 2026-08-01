@@ -10,6 +10,8 @@ public sealed class CmsEventLog
 
     public int? Version { get; set; }
 
+    public string? Fingerprint { get; set; }
+
     public DateTimeOffset Timestamp { get; set; }
 
     public required string Status { get; set; }

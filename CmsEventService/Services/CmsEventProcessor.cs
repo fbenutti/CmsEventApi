@@ -29,6 +29,7 @@ public sealed class CmsEventProcessor(
         }
 
         var accepted = 0;
+        var ignored = 0;
         var failures = new List<CmsEventFailure>();
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
@@ -53,18 +54,52 @@ public sealed class CmsEventProcessor(
 
             try
             {
-                await ApplyEventAsync(validation.Event, processedAt, cancellationToken);
+                var fingerprint = CreateFingerprint(validation.Event);
+                if (await IsDuplicateAsync(fingerprint, cancellationToken))
+                {
+                    AddLog(
+                        incomingEvent,
+                        "IgnoredDuplicate",
+                        $"Ignored duplicate {validation.Event.Type} for entity {validation.Event.Id}.",
+                        processedAt,
+                        fingerprint);
+                    logger.LogInformation(
+                        "Ignored duplicate CMS event {EventType} for entity {EntityId} at version {Version}.",
+                        validation.Event.Type,
+                        validation.Event.Id,
+                        validation.Event.Version);
+                    ignored++;
+                    index++;
+                    continue;
+                }
+
+                var outcome = await ApplyEventAsync(validation.Event, processedAt, cancellationToken);
+                var status = outcome == EventApplyOutcome.Processed ? "Processed" : "IgnoredStale";
                 AddLog(
                     incomingEvent,
-                    "Processed",
-                    $"Processed {validation.Event.Type} for entity {validation.Event.Id}.",
-                    processedAt);
-                logger.LogInformation(
-                    "Processed CMS event {EventType} for entity {EntityId} at version {Version}.",
-                    validation.Event.Type,
-                    validation.Event.Id,
-                    validation.Event.Version);
-                accepted++;
+                    status,
+                    $"{status} {validation.Event.Type} for entity {validation.Event.Id}.",
+                    processedAt,
+                    fingerprint);
+
+                if (outcome == EventApplyOutcome.Processed)
+                {
+                    logger.LogInformation(
+                        "Processed CMS event {EventType} for entity {EntityId} at version {Version}.",
+                        validation.Event.Type,
+                        validation.Event.Id,
+                        validation.Event.Version);
+                    accepted++;
+                }
+                else
+                {
+                    logger.LogInformation(
+                        "Ignored stale CMS event {EventType} for entity {EntityId} at version {Version}.",
+                        validation.Event.Type,
+                        validation.Event.Id,
+                        validation.Event.Version);
+                    ignored++;
+                }
             }
             catch (Exception ex)
             {
@@ -83,10 +118,10 @@ public sealed class CmsEventProcessor(
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        return new CmsEventProcessingResult(accepted, failures.Count, failures);
+        return new CmsEventProcessingResult(accepted, failures.Count, failures, ignored);
     }
 
-    private async Task ApplyEventAsync(ValidatedCmsEvent cmsEvent, DateTimeOffset processedAt, CancellationToken cancellationToken)
+    private async Task<EventApplyOutcome> ApplyEventAsync(ValidatedCmsEvent cmsEvent, DateTimeOffset processedAt, CancellationToken cancellationToken)
     {
         if (cmsEvent.Type == CmsEventType.Delete)
         {
@@ -105,7 +140,7 @@ public sealed class CmsEventProcessor(
                 deletedRows,
                 cmsEvent.Id);
 
-            return;
+            return EventApplyOutcome.Processed;
         }
 
         var existing = await dbContext.Entities.FindAsync([cmsEvent.Id], cancellationToken);
@@ -119,7 +154,7 @@ public sealed class CmsEventProcessor(
                 cmsEvent.Id,
                 cmsEvent.Version,
                 existing!.LatestVersion);
-            return;
+            return EventApplyOutcome.IgnoredStale;
         }
 
         var isPublished = cmsEvent.Type == CmsEventType.Publish;
@@ -137,7 +172,7 @@ public sealed class CmsEventProcessor(
                 LastEventTimestamp = cmsEvent.Timestamp,
                 UpdatedAt = processedAt
             });
-            return;
+            return EventApplyOutcome.Processed;
         }
 
         existing.PayloadJson = cmsEvent.PayloadJson!;
@@ -146,6 +181,7 @@ public sealed class CmsEventProcessor(
         existing.LastEventType = cmsEvent.Type.ToString();
         existing.LastEventTimestamp = cmsEvent.Timestamp;
         existing.UpdatedAt = processedAt;
+        return EventApplyOutcome.Processed;
     }
 
     private static ValidatedCmsEventResult Validate(CmsEventDto incomingEvent)
@@ -201,13 +237,35 @@ public sealed class CmsEventProcessor(
             incomingEvent.Timestamp.Value));
     }
 
-    private void AddLog(CmsEventDto incomingEvent, string status, string message, DateTimeOffset processedAt)
+    private async Task<bool> IsDuplicateAsync(string fingerprint, CancellationToken cancellationToken)
+    {
+        return dbContext.EventLogs.Local.Any(log => log.Fingerprint == fingerprint) ||
+            await dbContext.EventLogs.AnyAsync(log => log.Fingerprint == fingerprint, cancellationToken);
+    }
+
+    private static string CreateFingerprint(ValidatedCmsEvent cmsEvent)
+    {
+        return string.Join(
+            '|',
+            cmsEvent.Type,
+            cmsEvent.Id,
+            cmsEvent.Version?.ToString() ?? string.Empty,
+            cmsEvent.Timestamp.UtcDateTime.ToString("O"));
+    }
+
+    private void AddLog(
+        CmsEventDto incomingEvent,
+        string status,
+        string message,
+        DateTimeOffset processedAt,
+        string? fingerprint = null)
     {
         dbContext.EventLogs.Add(new CmsEventLog
         {
             EntityId = incomingEvent.Id?.Trim(),
             Type = incomingEvent.Type ?? "unknown",
             Version = incomingEvent.Version,
+            Fingerprint = fingerprint,
             Timestamp = incomingEvent.Timestamp ?? processedAt,
             Status = status,
             Message = message,
@@ -253,5 +311,11 @@ public sealed class CmsEventProcessor(
         public static ValidatedCmsEventResult Valid(ValidatedCmsEvent cmsEvent) => new(true, cmsEvent, string.Empty);
 
         public static ValidatedCmsEventResult Invalid(string error) => new(false, default!, error);
+    }
+
+    private enum EventApplyOutcome
+    {
+        Processed,
+        IgnoredStale
     }
 }

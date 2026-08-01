@@ -7,19 +7,34 @@ namespace CmsEventService.Services;
 
 public interface IEntityQueryService
 {
-    Task<IReadOnlyCollection<EntityResponse>> ListAsync(bool includeDisabled, CancellationToken cancellationToken);
+    Task<PagedResponse<EntityResponse>> ListAsync(
+        bool includeDisabled,
+        EntityQueryParameters parameters,
+        CancellationToken cancellationToken);
 }
 
 public sealed class EntityQueryService(IDbContextFactory<CmsDbContext> readerContextFactory) : IEntityQueryService
 {
-    public async Task<IReadOnlyCollection<EntityResponse>> ListAsync(bool includeDisabled, CancellationToken cancellationToken)
+    public async Task<PagedResponse<EntityResponse>> ListAsync(
+        bool includeDisabled,
+        EntityQueryParameters parameters,
+        CancellationToken cancellationToken)
     {
         await using var dbContext = await readerContextFactory.CreateDbContextAsync(cancellationToken);
 
-        var entities = await dbContext.Entities
+        var query = dbContext.Entities
             .AsNoTracking()
-            .Where(entity => includeDisabled || (entity.IsCmsPublished && !entity.IsLocallyDisabled))
+            .Where(entity => includeDisabled || (entity.IsCmsPublished && !entity.IsLocallyDisabled));
+
+        var totalItems = await query.CountAsync(cancellationToken);
+        var totalPages = totalItems == 0
+            ? 0
+            : (int)Math.Ceiling(totalItems / (double)parameters.PageSize);
+
+        var entities = await query
             .OrderBy(entity => entity.Id)
+            .Skip((parameters.Page - 1) * parameters.PageSize)
+            .Take(parameters.PageSize)
             .Select(entity => new
             {
                 entity.Id,
@@ -32,7 +47,7 @@ public sealed class EntityQueryService(IDbContextFactory<CmsDbContext> readerCon
             })
             .ToListAsync(cancellationToken);
 
-        return entities
+        var items = entities
             .Select(entity => new EntityResponse(
                 entity.Id,
                 entity.LatestVersion,
@@ -42,5 +57,12 @@ public sealed class EntityQueryService(IDbContextFactory<CmsDbContext> readerCon
                 entity.LastEventTimestamp,
                 JsonDocument.Parse(entity.PayloadJson).RootElement.Clone()))
             .ToList();
+
+        return new PagedResponse<EntityResponse>(
+            items,
+            parameters.Page,
+            parameters.PageSize,
+            totalItems,
+            totalPages);
     }
 }
